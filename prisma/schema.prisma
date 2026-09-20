@@ -1,0 +1,279 @@
+// Amrutam telemedicine backend - Prisma schema (Prisma 6, PostgreSQL)
+// Constraints Prisma cannot express (exclusion constraint, partial index, partitioning,
+// triggers) live in hand-written migrations under prisma/migrations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Enums ─────────────
+
+enum Role {
+  PATIENT
+  DOCTOR
+  ADMIN
+}
+
+enum SlotStatus {
+  AVAILABLE
+  HELD // temporarily reserved while payment is pending (saga step)
+  BOOKED
+  CANCELLED
+}
+
+enum ConsultationStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSED
+  DEAD
+}
+
+enum PaymentStatus {
+  INITIATED
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+// ───────────── Core tables ─────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role     @default(PATIENT)
+  isActive     Boolean  @default(true) @map("is_active")
+  mfaEnabled   Boolean  @default(false) @map("mfa_enabled")
+  mfaSecretEnc String?  @map("mfa_secret_enc") // AES-256-GCM encrypted TOTP secret
+  mfaLastStep  Int?     @map("mfa_last_step") // last accepted TOTP time-step (replay protection)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  profile          Profile?
+  doctor           Doctor?
+  consultations    Consultation[] @relation("PatientConsultations")
+  prescriptions    Prescription[] @relation("PatientPrescriptions")
+  payments         Payment[]
+  refreshTokens    RefreshToken[]
+  idempotencyKeys  IdempotencyKey[]
+
+  @@map("users")
+}
+
+model Profile {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @unique @map("user_id") @db.Uuid
+  fullName    String    @map("full_name")
+  phoneEnc    String?   @map("phone_enc") // PII: field-level encrypted
+  dateOfBirth DateTime? @map("date_of_birth") @db.Date
+  gender      String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Doctor {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  specialization  String
+  licenseNumber   String   @unique @map("license_number")
+  experienceYears Int      @default(0) @map("experience_years")
+  consultationFee Decimal  @map("consultation_fee") @db.Decimal(10, 2)
+  bio             String?
+  isVerified      Boolean  @default(false) @map("is_verified")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slots         AvailabilitySlot[]
+  consultations Consultation[]
+  prescriptions Prescription[]
+
+  @@index([specialization, isVerified])
+  @@map("doctors")
+}
+
+model AvailabilitySlot {
+  id        String     @id @default(uuid()) @db.Uuid
+  doctorId  String     @map("doctor_id") @db.Uuid
+  startTime DateTime   @map("start_time")
+  endTime   DateTime   @map("end_time")
+  status    SlotStatus @default(AVAILABLE)
+  heldUntil DateTime?  @map("held_until") // hold expiry; released by a background job
+  version   Int        @default(0) // optimistic locking
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  doctor        Doctor         @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  consultations Consultation[]
+
+  @@unique([doctorId, startTime])
+  @@index([doctorId, status, startTime]) // main search / booking query
+  @@index([status, heldUntil]) // hold-expiry job
+  @@map("availability_slots")
+}
+
+model Consultation {
+  id                 String             @id @default(uuid()) @db.Uuid
+  patientId          String             @map("patient_id") @db.Uuid
+  doctorId           String             @map("doctor_id") @db.Uuid
+  slotId             String             @map("slot_id") @db.Uuid
+  status             ConsultationStatus @default(PENDING_PAYMENT)
+  scheduledAt        DateTime           @map("scheduled_at")
+  startedAt          DateTime?          @map("started_at")
+  endedAt            DateTime?          @map("ended_at")
+  notesEnc           String?            @map("notes_enc") // clinical notes: encrypted
+  cancellationReason String?            @map("cancellation_reason")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  patient      User             @relation("PatientConsultations", fields: [patientId], references: [id])
+  doctor       Doctor           @relation(fields: [doctorId], references: [id])
+  slot         AvailabilitySlot @relation(fields: [slotId], references: [id])
+  prescription Prescription?
+  payments     Payment[]
+
+  @@index([patientId, scheduledAt])
+  @@index([doctorId, scheduledAt])
+  @@index([status, scheduledAt])
+  @@map("consultations")
+}
+
+model Prescription {
+  id             String   @id @default(uuid()) @db.Uuid
+  consultationId String   @unique @map("consultation_id") @db.Uuid
+  doctorId       String   @map("doctor_id") @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  contentEnc     String   @map("content_enc") // encrypted JSON: diagnosis, medications, instructions
+  issuedAt       DateTime @default(now()) @map("issued_at")
+
+  consultation Consultation @relation(fields: [consultationId], references: [id])
+  doctor       Doctor       @relation(fields: [doctorId], references: [id])
+  patient      User         @relation("PatientPrescriptions", fields: [patientId], references: [id])
+
+  @@index([patientId, issuedAt])
+  @@map("prescriptions")
+}
+
+model Payment {
+  id             String        @id @default(uuid()) @db.Uuid
+  consultationId String        @map("consultation_id") @db.Uuid
+  patientId      String        @map("patient_id") @db.Uuid
+  amount         Decimal       @db.Decimal(10, 2)
+  currency       String        @default("INR")
+  status         PaymentStatus @default(INITIATED)
+  provider       String        @default("mock")
+  providerRef    String?       @unique @map("provider_ref")
+  idempotencyKey String        @unique @map("idempotency_key")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  consultation Consultation @relation(fields: [consultationId], references: [id])
+  patient      User         @relation(fields: [patientId], references: [id])
+
+  @@index([consultationId])
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+// Append-only, range-partitioned by created_at (monthly). No FKs on purpose
+// (cheap writes, survives user deletion). The PK must include the partition key.
+model AuditLog {
+  id         BigInt   @default(autoincrement())
+  actorId    String?  @map("actor_id") @db.Uuid
+  actorRole  Role?    @map("actor_role")
+  action     String // e.g. PRESCRIPTION_VIEWED, CONSULTATION_CANCELLED
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@id([id, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ───────────── Support tables ─────────────
+
+model IdempotencyKey {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  key            String
+  requestHash    String   @map("request_hash") // detects same key + different body
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at")
+  expiresAt      DateTime @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") // store hash only
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  mfaVerified Boolean @default(false) @map("mfa_verified")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// Transactional outbox: written in the same transaction as the state change,
+// delivered asynchronously by the worker (at-least-once, retry with backoff).
+model OutboxEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  type        String
+  aggregateId String?      @map("aggregate_id")
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?      @map("last_error")
+  availableAt DateTime     @default(now()) @map("available_at")
+  processedAt DateTime?    @map("processed_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@index([status, availableAt])
+  @@map("outbox_events")
+}
+
+// Pre-aggregated per-day numbers for admin analytics (days are UTC).
+model DailyStat {
+  day       DateTime @id @db.Date
+  total     Int      @default(0)
+  completed Int      @default(0)
+  cancelled Int      @default(0)
+  noShow    Int      @default(0) @map("no_show")
+  revenue   Decimal  @default(0) @db.Decimal(12, 2)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("daily_stats")
+}
+

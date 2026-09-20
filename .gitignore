@@ -1,0 +1,24 @@
+# dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# secrets: never commit real values (.env.example and .env.test are committed on purpose)
+.env
+.env.local
+.env.*.local
+prod.env
+*.pem
+*.key
+
+# logs and local data
+*.log
+npm-debug.log*
+dump.rdb
+
+# editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

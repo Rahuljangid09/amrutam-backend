@@ -1,0 +1,28 @@
+# Local development services. Postgres is on host port 5433 (5432 is often taken).
+name: amrutam-backend
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: amrutam-postgres
+    environment:
+      POSTGRES_USER: amrutam
+      POSTGRES_PASSWORD: amrutam
+      POSTGRES_DB: amrutam
+      TZ: UTC
+      PGTZ: UTC
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U amrutam"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: amrutam-redis
+    ports: ["6379:6379"]
+
+volumes:
+  pgdata:

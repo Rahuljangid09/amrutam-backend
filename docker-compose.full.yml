@@ -1,0 +1,77 @@
+# The whole platform in one command (separate from your dev docker-compose.yml):
+#   1. npm run gen-secrets   -> paste JWT_ACCESS_SECRET and ENCRYPTION_KEYS into .env
+#   2. docker compose -f docker-compose.full.yml up --build
+# API :3000 | Prometheus :9090 | Grafana :3001 (admin/admin) | Jaeger UI :16686
+name: amrutam-full
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://amrutam:amrutam@postgres:5432/amrutam
+  REDIS_URL: redis://redis:6379
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?run npm run gen-secrets and put it in .env}
+  ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?run npm run gen-secrets and put it in .env}
+  ENCRYPTION_ACTIVE_KEY_ID: ${ENCRYPTION_ACTIVE_KEY_ID:-v1}
+  MFA_ENFORCE_STAFF: ${MFA_ENFORCE_STAFF:-false}
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+
+services:
+  postgres:
+    image: postgres:16
+    environment: { POSTGRES_USER: amrutam, POSTGRES_PASSWORD: amrutam, POSTGRES_DB: amrutam, TZ: UTC, PGTZ: UTC }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U amrutam"], interval: 5s, timeout: 3s, retries: 10 }
+
+  redis:
+    image: redis:7
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+
+  migrate:
+    build: .
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment: { DATABASE_URL: "postgresql://amrutam:amrutam@postgres:5432/amrutam" }
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: "no"
+
+  api:
+    build: .
+    environment: { <<: *app-env, OTEL_SERVICE_NAME: amrutam-api }
+    ports: ["3000:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["node", "dist/worker.js"]
+    environment: { <<: *app-env, OTEL_SERVICE_NAME: amrutam-worker }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [api]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment: { GF_SECURITY_ADMIN_PASSWORD: admin }
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+    depends_on: [prometheus]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment: { COLLECTOR_OTLP_ENABLED: "true" }
+    ports: ["16686:16686"]
+
+volumes:
+  pgdata:

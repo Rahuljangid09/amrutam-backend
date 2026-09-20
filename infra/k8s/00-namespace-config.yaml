@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Namespace
+metadata: { name: amrutam }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: amrutam-config, namespace: amrutam }
+data:
+  NODE_ENV: production
+  PORT: "3000"
+  LOG_LEVEL: info
+  TRUST_PROXY: "1"           # one load balancer / ingress in front
+  MFA_ENFORCE_STAFF: "true"
+  SLOT_HOLD_MINUTES: "10"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability:4318
+---
+# Template only. Create the real one from your secret manager (never commit real values):
+#   kubectl -n amrutam create secret generic amrutam-secrets --from-env-file=prod.env
+apiVersion: v1
+kind: Secret
+metadata: { name: amrutam-secrets, namespace: amrutam }
+type: Opaque
+stringData:
+  DATABASE_URL: postgresql://USER:PASSWORD@HOST:5432/amrutam?sslmode=require
+  REDIS_URL: redis://HOST:6379
+  JWT_ACCESS_SECRET: CHANGE_ME_96_HEX_CHARS
+  ENCRYPTION_KEYS: v1:CHANGE_ME_64_HEX_CHARS
+  ENCRYPTION_ACTIVE_KEY_ID: v1
+  METRICS_TOKEN: CHANGE_ME

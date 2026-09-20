@@ -1,0 +1,28 @@
+groups:
+  - name: amrutam-slo
+    rules:
+      - alert: HighReadLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{method="GET"}[5m]))) > 0.2
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "p95 read latency above the 200ms objective" }
+      - alert: HighWriteLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{method=~"POST|PATCH|DELETE"}[5m]))) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "p95 write latency above the 500ms objective" }
+      - alert: ErrorBudgetBurn
+        # 99.95% availability = 0.05% error budget; alert when 5xx exceeds 1% for 5 minutes (fast burn)
+        expr: sum(rate(http_request_duration_seconds_count{status_code=~"5.."}[5m])) / sum(rate(http_request_duration_seconds_count[5m])) > 0.01
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "5xx ratio above 1%: availability objective at risk" }
+      - alert: OutboxEventsDead
+        expr: increase(outbox_events_total{result="dead"}[15m]) > 0
+        labels: { severity: warning }
+        annotations: { summary: "notification events exhausted their retries and need attention" }
+      - alert: WorkerDown
+        expr: up{job="amrutam-worker"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "background worker is down: holds will not be released and notifications will not be sent" }

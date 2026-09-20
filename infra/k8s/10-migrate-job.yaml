@@ -1,0 +1,17 @@
+# Run BEFORE rolling out a new version (CI does this): applies pending database migrations once.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: amrutam-migrate
+  namespace: amrutam
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/OWNER/amrutam-backend:latest
+          command: ["npx", "prisma", "migrate", "deploy"]
+          envFrom: [{ secretRef: { name: amrutam-secrets } }]

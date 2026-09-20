@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: amrutam-api, namespace: amrutam, labels: { app: amrutam-api } }
+spec:
+  replicas: 3
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }   # zero-downtime deploys
+  selector: { matchLabels: { app: amrutam-api } }
+  template:
+    metadata:
+      labels: { app: amrutam-api }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "3000", prometheus.io/path: /metrics }
+    spec:
+      terminationGracePeriodSeconds: 30    # > the app's 10s drain, so in-flight requests finish
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: amrutam-api } } }
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes: [{ name: tmp, emptyDir: {} }]
+      containers:
+        - name: api
+          image: ghcr.io/OWNER/amrutam-backend:latest
+          ports: [{ containerPort: 3000 }]
+          envFrom: [{ configMapRef: { name: amrutam-config } }, { secretRef: { name: amrutam-secrets } }]
+          resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          startupProbe: { httpGet: { path: /health, port: 3000 }, failureThreshold: 30, periodSeconds: 2 }
+          livenessProbe: { httpGet: { path: /health, port: 3000 }, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /health/ready, port: 3000 }, periodSeconds: 5, failureThreshold: 2 }
+          lifecycle: { preStop: { exec: { command: ["sleep", "5"] } } }   # let the load balancer stop sending traffic first
+---
+apiVersion: v1
+kind: Service
+metadata: { name: amrutam-api, namespace: amrutam }
+spec:
+  selector: { app: amrutam-api }
+  ports: [{ port: 80, targetPort: 3000 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: amrutam-api, namespace: amrutam }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: amrutam-api }
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }
+  behavior:
+    scaleDown: { stabilizationWindowSeconds: 300 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: amrutam-api, namespace: amrutam }
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: amrutam-api } }

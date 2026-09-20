@@ -1,0 +1,26 @@
+# Every job in the worker is safe to run on several replicas at once (SKIP LOCKED / idempotent upserts).
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: amrutam-worker, namespace: amrutam, labels: { app: amrutam-worker } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: amrutam-worker } }
+  template:
+    metadata:
+      labels: { app: amrutam-worker }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "9101", prometheus.io/path: /metrics }
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes: [{ name: tmp, emptyDir: {} }]
+      containers:
+        - name: worker
+          image: ghcr.io/OWNER/amrutam-backend:latest
+          command: ["node", "dist/worker.js"]
+          env: [{ name: OTEL_SERVICE_NAME, value: amrutam-worker }]
+          envFrom: [{ configMapRef: { name: amrutam-config } }, { secretRef: { name: amrutam-secrets } }]
+          ports: [{ containerPort: 9101 }]
+          resources: { requests: { cpu: 100m, memory: 192Mi }, limits: { cpu: 500m, memory: 384Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          livenessProbe: { httpGet: { path: /, port: 9101 }, periodSeconds: 15 }
