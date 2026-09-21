@@ -20,7 +20,10 @@ COPY package.json package-lock.json ./
 # `prisma` is a production dependency so the same image can run `prisma migrate deploy`
 RUN npm ci --omit=dev && npm cache clean --force
 COPY prisma ./prisma
-RUN npx prisma generate
+RUN node node_modules/prisma/build/index.js generate
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+           /opt/yarn* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 3000
