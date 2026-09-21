@@ -23,7 +23,8 @@ COPY prisma ./prisma
 RUN node node_modules/prisma/build/index.js generate
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
            /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
-           /opt/yarn* /usr/local/bin/yarn /usr/local/bin/yarnpkg
+           /opt/yarn* /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+           /app/node_modules/typescript /app/node_modules/@typescript
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 3000
